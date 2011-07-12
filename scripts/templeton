@@ -1,0 +1,51 @@
+#!python
+
+import os
+import shutil
+import tempita
+import templeton
+
+data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
+
+def init(appname):
+    templates_dir = os.path.join(data_dir, 'templates')
+    shutil.copytree(templates_dir, appname)
+    # special templatization for index.html
+    html_dir = os.path.join(appname, 'html')
+    tmpl = tempita.Template.from_filename(os.path.join(html_dir, 'index.html.tmpl'))
+    f = file(os.path.join(html_dir, 'index.html'), 'w')
+    f.write(tmpl.substitute(appname=appname))
+    f.close()
+    os.unlink(os.path.join(html_dir, 'index.html.tmpl'))
+
+
+def install(wwwdata):
+    server_dir = os.path.join(data_dir, 'server')
+    shutil.copytree(server_dir, os.path.join(wwwdata, 'templeton'))
+
+
+if __name__ == '__main__':
+    from optparse import OptionParser
+    import errno
+    import sys
+    usage = '''%prog [options] <cmd> <parameters>
+
+<cmd> and <parameters> should be one of
+  init <appname>
+    Create a new templeton app
+  install <www-data-dir>
+    Install support web files (standard JS & CSS files)'''
+
+    parser = OptionParser(usage=usage)
+    (options, args) = parser.parse_args()
+    if len(args) < 1:
+        parser.print_help()
+        sys.exit(errno.EINVAL)
+    cmd = args[0]
+    if cmd == 'init':
+        init(args[1])
+    elif cmd == 'install':
+        install(args[1])
+    else:
+        parser.print_help()
+        sys.exit(errno.EINVAL)

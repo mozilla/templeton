@@ -1,0 +1,27 @@
+templeton, a minimal web framework
+
+Templeton is a script, module, and support files intended for rapid development
+of simple web applications.  It's basically a package around web.py which
+suggests a common layout and organization for web apps.
+
+Usage:
+
+templeton install <www-data-dir>
+
+  Copies support files (JS, CSS) into a "templeton" directory in <www-data-dir>.
+  The latter should be the root of the web site that will serve templeton
+  apps, since the template HTML file loads JS and CSS from /templeton.
+
+templeton init <appname>
+
+  Creates a directory named <appname> with "html" and "server" directories
+  containing templates.  You should be able to serve up your default app
+  by doing
+
+    cd <appname>/server
+    python server.py
+
+  Go to http://localhost:8080/ to see the result.  The next steps you'll want
+  to do is edit <appname>/server/handlers.py and put in your server-side
+  business logic and edit and create the files in <appname>/html to build up
+  your client-side logic.
