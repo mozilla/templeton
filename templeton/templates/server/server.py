@@ -1,8 +1,9 @@
-import templeton
+import templeton.handlers
+import templeton.middleware
 import handlers
 import web
 
-urls = templeton.load_urls(handlers.urls)
+urls = templeton.handlers.load_urls(handlers.urls)
 
 app = web.application(urls, handlers.__dict__)
 

@@ -12,8 +12,6 @@ STATIC_PATH = '../html'
 
 LIBS_URL_PREFIX = '/templeton'
 
-API_PATH = '/api'
-
 class MozStaticApp(web.httpserver.StaticApp):
     
     def __init__(self, environ, start_response, static_path=STATIC_PATH,
@@ -72,18 +70,3 @@ class MozStaticMiddleware:
 
 # Patch the original StaticMiddleware.
 web.httpserver.StaticMiddleware = MozStaticMiddleware
-
-def load_urls(u):
-    """ Load a list of URLs, ensuring they all start with API_PATH. """
-    urls = []
-    count = 0
-    for i in u:
-        if count % 2 == 0:
-            path = i
-            if path.find(API_PATH) != 0:
-                path = API_PATH + path
-            urls.append(path)
-        else:
-            urls.append(i)
-        count += 1
-    return urls
