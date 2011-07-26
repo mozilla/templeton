@@ -40,9 +40,8 @@ def get_json(func):
         if web.ctx.path[-1] != '/':
             # redirect all api calls to slash-terminated pages, for
             # consistency
-            raise web.seeother(posixpath.join(web.ctx.env['SCRIPT_NAME'],
-                                              web.ctx.path) + '/' +
-                               web.ctx.query)
+            raise web.seeother(web.ctx.env.get('SCRIPT_FILENAME', '') +
+                               web.ctx.path + '/' + web.ctx.query)
         try:
             results = json.dumps(func(*a, **kw))
         except KeyboardInterrupt:
