@@ -1,5 +1,6 @@
 #!python
 
+import errno
 import os
 import shutil
 import tempita
@@ -8,20 +9,30 @@ import templeton
 data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
 
 def init(appname):
+    if '/' in appname:
+        print 'Slashes are not allowed in project names.'
+        return errno.EINVAL
+    if os.path.exists(appname):
+        print 'Cannot initialize project "%s" over existing %s.' % \
+            (appname, 'directory' if os.path.isdir(appname) else 'file')
+        return errno.EEXIST
     templates_dir = os.path.join(data_dir, 'templates')
     shutil.copytree(templates_dir, appname)
     # special templatization for index.html
     html_dir = os.path.join(appname, 'html')
-    tmpl = tempita.Template.from_filename(os.path.join(html_dir, 'index.html.tmpl'))
+    tmpl = tempita.Template.from_filename(os.path.join(html_dir,
+                                                       'index.html.tmpl'))
     f = file(os.path.join(html_dir, 'index.html'), 'w')
     f.write(tmpl.substitute(appname=appname))
     f.close()
     os.unlink(os.path.join(html_dir, 'index.html.tmpl'))
+    return 0
 
 
 def install(wwwdata):
     server_dir = os.path.join(data_dir, 'server')
     shutil.copytree(server_dir, os.path.join(wwwdata, 'templeton'))
+    return 0
 
 
 if __name__ == '__main__':
@@ -43,9 +54,11 @@ if __name__ == '__main__':
         sys.exit(errno.EINVAL)
     cmd = args[0]
     if cmd == 'init':
-        init(args[1])
+        rc = init(args[1])
     elif cmd == 'install':
-        install(args[1])
+        rc = install(args[1])
     else:
         parser.print_help()
-        sys.exit(errno.EINVAL)
+        rc = errno.EINVAL
+    sys.exit(rc)
+        
