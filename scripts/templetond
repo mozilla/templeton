@@ -47,6 +47,10 @@ class ImmediateWriteConfigParser(ConfigParser.ConfigParser):
         ConfigParser.ConfigParser.remove_option(self, section, option)
         self.save()
 
+    def remove_section(self, section):
+        ConfigParser.ConfigParser.remove_section(self, section)
+        self.save()
+
 
 class AppMissingData(Exception):
     pass
@@ -124,6 +128,10 @@ class TempletonApp(object):
 
     def running(self):
         return self.controller != None
+
+    def unregister(self):
+        self.stop()
+        self.cfg.remove_section(self.app_name)
 
 
 class CommandError(Exception):
@@ -208,6 +216,14 @@ class TempletonMgr(object):
         self.cfg.set(app_name, 'port', str(app_port))
         self.load_app(app_name)
 
+    def unregister(self, args):
+        try:
+            app_name = args[0]
+        except IndexError:
+            raise CommandError(errno.EINVAL,
+                               'usage: unregister <app name>')
+        self.get_app(args).unregister()
+        
     def disable(self, args):
         self.get_app(args).disable()
 
@@ -341,7 +357,7 @@ class SocketEventHandler(EventHandler):
 
 class CommandAcceptor(SocketEventHandler):
 
-    SOCK_FILENAME = '/tmp/templeton.sock'
+    SOCK_FILENAME = '/var/run/templetond/templetond.sock'
 
     def __init__(self, appmgr):
         EventHandler.__init__(self)
@@ -404,6 +420,8 @@ class CommandHandler(SocketEventHandler):
         try:
             if cmd == 'register':
                 resultstr = self.appmgr.register(args)
+            elif cmd == 'unregister':
+                resultstr = self.appmgr.unregister(args)
             elif cmd == 'start':
                 resultstr = self.appmgr.start(args)
             elif cmd == 'stop':
