@@ -1,0 +1,522 @@
+#!python
+
+import errno
+import inspect
+import logging
+import logging.handlers
+import os
+import select
+import signal
+import socket
+import subprocess
+import sys
+import time
+import ConfigParser
+
+FCGI_APP = 'templeton.fcgi'
+DEFAULT_USER = 'mozauto'
+DEFAULT_DATA_FILES = ('/var/run/templetond/templetond.apps', 'templetond.apps')
+DEFAULT_STARTING_PORT = 9500
+TERM_TIMEOUT = 5
+
+reactor = None
+
+def execution_path(filename):
+    path = os.path.join(os.path.dirname(inspect.getfile(sys._getframe(1))),
+                        filename)
+    if path[0] != '/':
+        path = os.path.join(os.getcwd(), path)
+    return path
+
+
+class ImmediateWriteConfigParser(ConfigParser.ConfigParser):
+
+    def __init__(self, filename):
+        ConfigParser.ConfigParser.__init__(self)
+        self.filename = filename
+        self.read(self.filename)
+
+    def save(self):
+        self.write(file(self.filename, 'w'))
+    
+    def set(self, section, option, value):
+        ConfigParser.ConfigParser.set(self, section, option, value)
+        self.save()
+
+    def remove_option(self, section, option):
+        ConfigParser.ConfigParser.remove_option(self, section, option)
+        self.save()
+
+
+class AppMissingData(Exception):
+    pass
+
+
+class TempletonApp(object):
+
+    MAX_RETRY_COUNT = 5
+
+    def __init__(self, app_name, user, cfg):
+        self.app_name = app_name
+        self.user = user
+        self.cfg = cfg
+        self.controller = None
+        self.retry_count = 0
+        self.stopping = False
+
+        try:
+            self.disabled = self.cfg.get(app_name, 'disabled')
+        except (ConfigParser.NoOptionError, ValueError):
+            self.disabled = False
+        try:
+            self.path = self.cfg.get(app_name, 'path')
+            self.port = self.cfg.getint(app_name, 'port')
+        except (ConfigParser.NoOptionError, ValueError):
+            raise AppMissingData()
+
+    def disable(self):
+        if self.disabled:
+            return
+        self.stop()
+        self.disabled = True
+        self.cfg.set(self.app_name, 'disabled', 'true')
+
+    def enable(self):
+        if not self.disabled:
+            return
+        self.retry_count = 0
+        self.disabled = False
+        self.cfg.remove_option(self.app_name, 'disabled')
+
+    def controller_closed(self):
+        logging.info('App "%s" exited with return code %s.' %
+                     (self.app_name, self.controller.returncode))
+        self.controller = None
+        if not self.stopping:
+            logging.warn('App "%s" terminated unexpectedly!' % self.app_name)
+            self.retry_count += 1
+            if self.retry_count > self.MAX_RETRY_COUNT:
+                logging.error(
+                    'App "%s" automatically restarted too many times (%d). Disabling it.'
+                    % (self.app_name, self.retry_count))
+                self.disable()
+            else:
+                logging.info('Restarting...')
+                self.start()
+        else:
+            self.stopping = False
+            self.retry_count = 0
+
+    def start(self):
+        if self.disabled:
+            return
+        if self.running():
+            return
+        self.controller = TempletonAppController(self)
+        self.controller.start()
+        reactor.register_handler(self.controller)
+
+    def stop(self):
+        if not self.running():
+            return
+        self.stopping = True
+        self.controller.stop()
+
+    def running(self):
+        return self.controller != None
+
+
+class CommandError(Exception):
+
+    def __init__(self, err, errstr=''):
+        self.err = err
+        if errstr:
+            self.errstr = errstr
+        else:
+            self.errstr = os.strerror(self.err)
+    
+    def __str__(self):
+        return 'ERROR %d %s' % (self.err, self.errstr)
+
+
+class TempletonMgr(object):
+
+    def __init__(self, cfg_file_name, starting_port, user):
+        self.cfg_file_name = cfg_file_name
+        self.starting_port = starting_port
+        self.user = user
+        self.cfg = ImmediateWriteConfigParser(self.cfg_file_name)
+        self.apps = {}
+        app_names = self.cfg.sections()
+        for n in app_names:
+            self.load_app(n)
+
+    def load_app(self, app_name):
+        missing_data = False
+        app_data = {}
+        try:
+            self.apps[app_name] = TempletonApp(app_name, self.user, self.cfg)
+        except AppMissingData:
+            sys.stderr.write('App "%s" has missing data; ignoring it.\n'
+                             % app_name)
+
+    def next_free_port(self):
+        occupied_ports = map(lambda x: x.port, self.apps.values())
+        occupied_ports.sort()
+        p = self.starting_port
+        while p in occupied_ports:
+            p += 1
+        return p
+
+    def get_app(self, args):
+        try:
+            appname = args[0]
+        except IndexError:
+            raise CommandError(errno.EINVAL, 'specify app name')
+        app = self.apps.get(appname, None)
+        if app == None:
+            raise CommandError(errno.EINVAL, 'no such app')
+        return app
+
+    def start(self, args):
+        self.get_app(args).start()
+
+    def start_all(self, args=[]):
+        for a in self.apps.values():
+            a.start()
+
+    def stop(self, args):
+        self.get_app(args).stop()
+
+    def stop_all(self, args=[]):
+        for a in self.apps.values():
+            a.stop()
+
+    def register(self, args):
+        try:
+            app_name = args[0]
+            app_path = args[1]
+        except IndexError:
+            raise CommandError(errno.EINVAL,
+                               'usage: register <app name> <app server path>')
+        if app_name in self.apps.keys():
+            raise CommandError(errno.EINVAL,
+                               'application "%s" already registered' % app_name)
+        app_port = self.next_free_port()
+        self.cfg.add_section(app_name)
+        self.cfg.set(app_name, 'path', app_path)
+        self.cfg.set(app_name, 'port', str(app_port))
+        self.load_app(app_name)
+
+    def disable(self, args):
+        self.get_app(args).disable()
+
+    def enable(self, args):
+        self.get_app(args).enable()
+
+    def list(self, args):
+        app_strs = []
+        for name, app in self.apps.iteritems():
+            if app.running():
+                status = 'running on port %d' % app.port
+            elif app.disabled:
+                status = 'disabled'
+            else:
+                status = 'stopped'
+            app_strs.append('%s (%s)' % (name, status))
+        return ', '.join(app_strs)
+
+
+class EventHandler(object):
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def fileno(self):
+        return -1
+
+
+class TempletonAppController(EventHandler):
+
+    def __init__(self, app):
+        EventHandler.__init__(self)
+        self.app = app
+        self.p = None
+        self.returncode = None
+
+    def fileno(self):
+        return self.p.stdout.fileno()
+
+    def execute(self):
+        if self.p:
+            while True:
+                read = self.p.stdout.read()
+                if not read:
+                    break
+            if self.p.poll() is not None:
+                self.returncode = self.p.returncode
+                self.p.wait()
+                self.close()
+
+    def close(self):
+        if self.closed:
+            return
+        EventHandler.close(self)
+        self.p = None
+        self.closed = True
+        self.app.controller_closed()
+
+    def start(self):
+        if self.p:
+            return
+        args = ('spawn-fcgi',
+                '-n',
+                '-d',
+                os.path.join(self.app.path, 'server'),
+                '-a',
+                '127.0.0.1',
+                '-p',
+                str(self.app.port),
+                '-u',
+                self.app.user,
+                execution_path(FCGI_APP))
+        self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, close_fds=True)
+        logging.info('App "%s" started, pid %d' % (self.app.app_name,
+                                                   self.p.pid))
+
+    def stop(self):
+        if not self.p:
+            return
+        try:
+            self.p.terminate()
+        except OSError, e:
+            if e.errno != 3:
+                raise
+        for i in xrange(0, TERM_TIMEOUT):
+            if self.p.poll() is not None:
+                break
+            time.sleep(1)
+        if self.p.poll() is None:
+            try:
+                self.p.kill()
+            except OSError, e:
+                if e.errno != 3:
+                    raise
+            else:
+                for i in xrange(0, TERM_TIMEOUT):
+                    if self.p.poll() is not None:
+                        break
+                    time.sleep(1)
+        if self.p.poll() is None:
+            logging.error('Could not kill app "%s"!' % self.app.app_name)
+        else:
+            self.p.wait()
+            self.returncode = self.p.returncode
+        logging.info('App "%s" stopped.' % self.app.app_name)
+        self.close()
+
+
+class SocketEventHandler(EventHandler):
+    
+    def __init__(self, sock):
+        EventHandler.__init__(self)
+        self.sock = sock
+
+    def close(self):
+        if self.closed:
+            return
+        EventHandler.close(self)
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+
+    def fileno(self):
+        return self.sock.fileno()
+
+
+class CommandAcceptor(SocketEventHandler):
+
+    SOCK_FILENAME = '/tmp/templeton.sock'
+
+    def __init__(self, appmgr):
+        EventHandler.__init__(self)
+        self.appmgr = appmgr
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            os.remove(self.SOCK_FILENAME)
+        except OSError:
+            pass
+        self.sock.setblocking(0)
+        self.sock.bind(self.SOCK_FILENAME)
+        self.sock.listen(1)
+        reactor.register_handler(self)
+
+    def fileno(self):
+        return self.sock.fileno()
+
+    def execute(self):
+        conn, addr = self.sock.accept()
+        conn.setblocking(0)
+        reactor.register_handler(CommandHandler(conn, self.appmgr))
+
+
+class CommandHandler(SocketEventHandler):
+
+    RECV_BYTES = 1024
+
+    def __init__(self, sock, appmgr):
+        EventHandler.__init__(self)
+        self.sock = sock
+        self.appmgr = appmgr
+        self.buffer = ''
+        EventHandler.__init__(self)
+
+    def execute(self):
+        while True:
+            try:
+                read = self.sock.recv(self.RECV_BYTES)
+            except socket.error, e:
+                if e.errno == errno.EAGAIN:
+                    break
+                raise
+            if not read:
+                self.close()  # but process anything already read
+                break
+            self.buffer += read
+
+        while True:
+            line, p, rest = self.buffer.partition('\n')
+            if not p:
+                return
+            self.buffer = rest
+            line = line.strip()
+            cmd, p, argstr = line.partition(' ')
+            args = argstr.split(' ')
+            self.handle_cmd(cmd, args)
+
+    def handle_cmd(self, cmd, args):
+        response = ''
+        try:
+            if cmd == 'register':
+                resultstr = self.appmgr.register(args)
+            elif cmd == 'start':
+                resultstr = self.appmgr.start(args)
+            elif cmd == 'stop':
+                resultstr = self.appmgr.stop(args)
+            elif cmd == 'disable':
+                resultstr = self.appmgr.disable(args)
+            elif cmd == 'enable':
+                resultstr = self.appmgr.enable(args)
+            elif cmd == 'list':
+                resultstr = self.appmgr.list(args)
+            elif cmd == 'quit':
+                self.close()
+                return
+            else:
+                raise CommandError(errno.EOPNOTSUPP,
+                                   'Unknown command "%s"' % cmd)
+        except CommandError, e:
+            response = str(e)
+        else:
+            response = 'OK'
+            if resultstr:
+                response += ' %s' % resultstr
+        self.sock.send('%s\n' % response)
+
+
+class Reactor(object):
+
+    SELECT_TIMEOUT = 0.1
+
+    def __init__(self):
+        self.event_handlers = []
+        self.enabled = True
+
+    def stop(self):
+        self.enabled = False
+
+    def register_handler(self, handler):
+        self.event_handlers.append(handler)
+
+    def unregister_handler(self, handler):
+        self.event_handlers.remove(handler)
+    
+    def run(self):
+        while self.enabled:
+            try:
+                fileno_map = {}
+                for e in self.event_handlers:
+                    if e.closed:
+                        self.event_handlers.remove(e)
+                    else:
+                        fileno_map[e.fileno()] = e
+                rlist = fileno_map.keys()
+                rlist.sort()
+                try:
+                    rready, wready, xready = select.select(rlist, [], [],
+                                                           self.SELECT_TIMEOUT)
+                except select.error, e:
+                    continue
+                for fileno in rready:
+                    fileno_map[fileno].execute()
+            except KeyboardInterrupt:
+                self.enabled = False
+
+
+def signal_handler(signum, frame):
+    global reactor
+    if signum == signal.SIGTERM and reactor:
+        reactor.stop()
+
+    
+def main():
+    from optparse import OptionParser
+    parser = OptionParser()
+    parser.add_option('-d', '--data-file', dest='data_file',
+                      help='location of config file', default=None)
+    parser.add_option('-l', '--log-file', dest='log_file',
+                      help='location of log file, defaults to stdout',
+                      default=None)
+    parser.add_option('-p', '--starting-port', dest='starting_port',
+                      help='first available port for FCGI apps',
+                      default=DEFAULT_STARTING_PORT)
+    parser.add_option('-u', '--user', dest='user',
+                      help='user to run templeton apps', default=DEFAULT_USER)
+    (options, args) = parser.parse_args()
+
+    if options.data_file is None:
+        for f in DEFAULT_DATA_FILES:
+            if os.path.exists(f):
+                options.data_file = f
+    if options.data_file is None:
+        options.data_file = DEFAULT_DATA_FILES[0]
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    if options.log_file:
+        handler = logging.handlers.RotatingFileHandler(
+            options.log_file, maxBytes=1024*1024, backupCount=5)
+    else:
+        handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", '%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(handler)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    global reactor
+    reactor = Reactor()
+    mgr = TempletonMgr(options.data_file, options.starting_port, options.user)
+    mgr.start_all()
+    acceptor = CommandAcceptor(mgr)
+
+    reactor.run()
+    mgr.stop_all()
+
+
+if __name__ == '__main__':
+    main()
