@@ -210,7 +210,7 @@ class TempletonMgr(object):
             app_path = args[1]
         except IndexError:
             raise CommandError(errno.EINVAL,
-                               'usage: register <app name> <app server path>')
+                               'usage: register <app name> <app path>')
         if app_name in self.apps.keys():
             raise CommandError(errno.EINVAL,
                                'application "%s" already registered' % app_name)
@@ -224,7 +224,8 @@ class TempletonMgr(object):
         tmpl = tempita.Template.from_filename(os.path.join(templates_dir,
                                                            'nginx_location.conf.tmpl'))
         f = file(os.path.join(self.nginx_locations_dir, '%s.conf' % app_name), 'w')
-        f.write(tmpl.substitute(appname=app_name, port=app_port))
+        f.write(tmpl.substitute(appname=app_name, port=app_port,
+                                htmlpath=os.path.join(app_path, 'html')))
         f.close()
         # FIXME: Would be nice to automatically reload the nginx config...
 

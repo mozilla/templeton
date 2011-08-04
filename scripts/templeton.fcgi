@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!python
 import inspect
 import os.path
 import sys
