@@ -20,7 +20,7 @@ def init(appname):
         print 'Cannot initialize project "%s" over existing %s.' % \
             (appname, 'directory' if os.path.isdir(appname) else 'file')
         return errno.EEXIST
-    templates_dir = os.path.join(data_dir, 'templates')
+    templates_dir = os.path.join(data_dir, 'templates', 'project')
     shutil.copytree(templates_dir, appname)
     # special templatization for index.html
     html_dir = os.path.join(appname, 'html')

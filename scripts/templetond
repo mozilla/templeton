@@ -10,12 +10,15 @@ import signal
 import socket
 import subprocess
 import sys
+import tempita
+import templeton
 import time
 import ConfigParser
 
 FCGI_APP = 'templeton.fcgi'
 DEFAULT_USER = 'mozauto'
 DEFAULT_DATA_FILES = ('/var/run/templetond/templetond.apps', 'templetond.apps')
+DEFAULT_NGINX_LOCATIONS_DIR = '/etc/nginx/templeton-locations'
 DEFAULT_STARTING_PORT = 9500
 TERM_TIMEOUT = 5
 
@@ -149,10 +152,11 @@ class CommandError(Exception):
 
 class TempletonMgr(object):
 
-    def __init__(self, cfg_file_name, starting_port, user):
+    def __init__(self, cfg_file_name, starting_port, user, nginx_locations_dir):
         self.cfg_file_name = cfg_file_name
         self.starting_port = starting_port
         self.user = user
+        self.nginx_locations_dir = nginx_locations_dir
         self.cfg = ImmediateWriteConfigParser(self.cfg_file_name)
         self.apps = {}
         app_names = self.cfg.sections()
@@ -215,6 +219,14 @@ class TempletonMgr(object):
         self.cfg.set(app_name, 'path', app_path)
         self.cfg.set(app_name, 'port', str(app_port))
         self.load_app(app_name)
+        data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
+        templates_dir = os.path.join(data_dir, 'templates', 'server')
+        tmpl = tempita.Template.from_filename(os.path.join(templates_dir,
+                                                           'nginx_location.conf.tmpl'))
+        f = file(os.path.join(self.nginx_locations_dir, '%s.conf' % app_name), 'w')
+        f.write(tmpl.substitute(appname=app_name, port=app_port))
+        f.close()
+        # FIXME: Would be nice to automatically reload the nginx config...
 
     def unregister(self, args):
         try:
@@ -223,6 +235,7 @@ class TempletonMgr(object):
             raise CommandError(errno.EINVAL,
                                'usage: unregister <app name>')
         self.get_app(args).unregister()
+        self.apps.pop(app_name)
         
     def disable(self, args):
         self.get_app(args).disable()
@@ -503,6 +516,9 @@ def main():
     parser.add_option('-p', '--starting-port', dest='starting_port',
                       help='first available port for FCGI apps',
                       default=DEFAULT_STARTING_PORT)
+    parser.add_option('-n', '--nginx-locations-dir', dest='nginx_locations_dir',
+                      help='location for templeton nginx location config files',
+                      default=DEFAULT_NGINX_LOCATIONS_DIR)
     parser.add_option('-u', '--user', dest='user',
                       help='user to run templeton apps', default=DEFAULT_USER)
     (options, args) = parser.parse_args()
@@ -528,7 +544,8 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     global reactor
     reactor = Reactor()
-    mgr = TempletonMgr(options.data_file, options.starting_port, options.user)
+    mgr = TempletonMgr(options.data_file, options.starting_port, options.user,
+                       options.nginx_locations_dir)
     mgr.start_all()
     acceptor = CommandAcceptor(mgr)
 
