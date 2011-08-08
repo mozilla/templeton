@@ -38,7 +38,7 @@
 import sys
 from setuptools import setup
 
-version = '0.3'
+version = '0.3.1'
 
 deps = ['web.py', 'tempita', 'python-daemon']
 
