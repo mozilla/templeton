@@ -17,6 +17,7 @@ import ConfigParser
 
 FCGI_APP = 'templeton.fcgi'
 DEFAULT_USER = 'mozauto'
+DEFAULT_PIDFILE = '/var/run/templetond/templetond.pid'
 DEFAULT_DATA_FILES = ('/var/run/templetond/templetond.apps', 'templetond.apps')
 DEFAULT_NGINX_LOCATIONS_DIR = '/etc/nginx/templeton-locations'
 DEFAULT_STARTING_PORT = 9500
@@ -505,10 +506,38 @@ def signal_handler(signum, frame):
     if signum == signal.SIGTERM and reactor:
         reactor.stop()
 
+
+def run(options):
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    if options.log_file:
+        handler = logging.handlers.RotatingFileHandler(
+            options.log_file, maxBytes=1024*1024, backupCount=5)
+    else:
+        handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", '%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(handler)
+
+    global reactor
+    reactor = Reactor()
+    mgr = TempletonMgr(options.data_file, options.starting_port, options.user,
+                       options.nginx_locations_dir)
+    mgr.start_all()
+    acceptor = CommandAcceptor(mgr)
+    reactor.run()
+    mgr.stop_all()
+
     
 def main():
     from optparse import OptionParser
     parser = OptionParser()
+    parser.add_option('--pidfile', dest='pidfile',
+                      help='specify pid file; only when in daemon mode',
+                      default=DEFAULT_PIDFILE)
+    parser.add_option('-f', '--foreground', dest='foreground',
+                      action='store_true',
+                      help='run in foreground (default is run as daemon)')
     parser.add_option('-d', '--data-file', dest='data_file',
                       help='location of config file', default=None)
     parser.add_option('-l', '--log-file', dest='log_file',
@@ -530,29 +559,19 @@ def main():
                 options.data_file = f
     if options.data_file is None:
         options.data_file = DEFAULT_DATA_FILES[0]
-
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    if options.log_file:
-        handler = logging.handlers.RotatingFileHandler(
-            options.log_file, maxBytes=1024*1024, backupCount=5)
+    if options.foreground:
+        signal.signal(signal.SIGTERM, signal_handler)
+        run(options)
     else:
-        handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s %(message)s", '%Y-%m-%d %H:%M:%S'))
-    logger.addHandler(handler)
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    global reactor
-    reactor = Reactor()
-    mgr = TempletonMgr(options.data_file, options.starting_port, options.user,
-                       options.nginx_locations_dir)
-    mgr.start_all()
-    acceptor = CommandAcceptor(mgr)
-
-    reactor.run()
-    mgr.stop_all()
-
+        import daemon, lockfile
+        context = daemon.DaemonContext(pidfile=lockfile.FileLock(options.pidfile))
+        context.signal_map = { signal.SIGTERM: signal_handler }
+        with context:
+            pidf = file(options.pidfile, 'w')
+            pidf.write(str(os.getpid()))
+            pidf.close()
+            run(options)
+            os.unlink(options.pidfile)
 
 if __name__ == '__main__':
     main()
