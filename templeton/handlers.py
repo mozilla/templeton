@@ -51,17 +51,3 @@ def json_response(func):
         web.header('Content-Type', 'application/json; charset=utf-8')
         return results
     return wrap
-
-
-class JsonHandler(object):
-    """
-    Deprecated; use decorators instead, allowing for mixed response types.
-    """
-
-    @json_response
-    def GET(self):
-        args, body = get_request_parms()
-        return self._GET(args, body)
-
-    def _GET(self, params, body):
-        raise NotImplementedError
