@@ -34,7 +34,7 @@ def get_request_parms():
     return (urlparse.parse_qs(web.ctx.query[1:], True), body)
 
 
-def get_json(func):
+def json_response(func):
     """ Translates results of 'func' into a JSON request. """
     def wrap(*a, **kw):
         if web.ctx.path[-1] != '/':
@@ -58,7 +58,7 @@ class JsonHandler(object):
     Deprecated; use decorators instead, allowing for mixed response types.
     """
 
-    @get_json
+    @json_response
     def GET(self):
         args, body = get_request_parms()
         return self._GET(args, body)
