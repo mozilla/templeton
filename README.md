@@ -64,7 +64,7 @@ templeton is geared toward client-rich, REST-based web applications.  These
 typically involve a large amount of JSON.  templeton provides decorators to
 simplify handler code.
 
-@get_json is a decorator function that expects the decorated function to
+@json_response is a decorator function that expects the decorated function to
 return a JSON-serializable object, which it uses to construct a proper
 web.py response.
 
@@ -84,7 +84,7 @@ A trivial example of a JSON handler that echoes back any search-string args:
     
     class JsonTest(object):
     
-        @templeton.handlers.get_json
+        @templeton.handlers.json_response
         def GET(self):
             args, body = templeton.handlers.get_request_parms()
             return args
