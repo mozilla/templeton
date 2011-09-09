@@ -38,7 +38,7 @@
 import sys
 from setuptools import setup
 
-version = '0.4'
+version = '0.5'
 
 deps = ['web.py', 'tempita', 'python-daemon']
 
@@ -70,6 +70,7 @@ setup(name='templeton',
                                   'templates/project/server/*',
                                   'templates/server/*',
                                   'server/scripts/*',
+                                  'server/style/*css',
                                   'server/style/Aristo/*css',
                                   'server/style/Aristo/images/*']},
       include_package_data=True,
