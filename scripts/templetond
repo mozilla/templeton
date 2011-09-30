@@ -543,7 +543,7 @@ def main():
     parser.add_option('-l', '--log-file', dest='log_file',
                       help='location of log file, defaults to stdout',
                       default=None)
-    parser.add_option('-p', '--starting-port', dest='starting_port',
+    parser.add_option('-p', '--starting-port', dest='starting_port', type='int',
                       help='first available port for FCGI apps',
                       default=DEFAULT_STARTING_PORT)
     parser.add_option('-n', '--nginx-locations-dir', dest='nginx_locations_dir',
