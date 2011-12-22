@@ -3,6 +3,7 @@ try:
 except:
     import simplejson as json
 import posixpath
+import StringIO
 import urlparse
 import web
 
@@ -34,14 +35,19 @@ def get_request_parms():
     return (urlparse.parse_qs(web.ctx.query[1:], True), body)
 
 
+def redirect_api_if_needed():
+    """ Redirects all api calls to slash-terminated pages, for
+        consistency"""
+    if web.ctx.path[-1] != '/':
+        raise web.seeother(web.ctx.env.get('SCRIPT_FILENAME', '') +
+                           web.ctx.path + '/' + web.ctx.query)
+
+
 def json_response(func):
     """ Translates results of 'func' into a JSON request. """
     def wrap(*a, **kw):
-        if web.ctx.path[-1] != '/':
-            # redirect all api calls to slash-terminated pages, for
-            # consistency
-            raise web.seeother(web.ctx.env.get('SCRIPT_FILENAME', '') +
-                               web.ctx.path + '/' + web.ctx.query)
+        redirect_api_if_needed()
+
         try:
             results = json.dumps(func(*a, **kw))
         except KeyboardInterrupt:
@@ -50,4 +56,24 @@ def json_response(func):
         web.header('Content-Length', len(results))
         web.header('Content-Type', 'application/json; charset=utf-8')
         return results
+    return wrap
+
+
+def png_response(func):
+    """ Translates a PIL image into a PNG response. """
+    def wrap(*a, **kw):
+        redirect_api_if_needed()
+
+        output = StringIO.StringIO()
+        try:
+            im = func(*a, **kw)
+        except KeyboardInterrupt:
+            # Allow keyboard interrupts through for debugging.
+            raise
+
+        im.save(output, format="PNG")
+        data = output.getvalue()
+        web.header('Content-Length', len(data))
+        web.header('Content-Type', 'image/png')
+        return data
     return wrap
