@@ -313,10 +313,13 @@ class TempletonAppController(EventHandler):
                 str(self.app.port),
                 '-u',
                 self.app.user,
+                '--',
+                sys.executable,
                 execution_path(FCGI_APP))
         self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, close_fds=True)
+        logging.debug('Starting "%s": %s' % (self.app.app_name, ' '.join(args)))
         logging.info('App "%s" started, pid %d' % (self.app.app_name,
                                                    self.p.pid))
 
@@ -459,7 +462,11 @@ class CommandHandler(SocketEventHandler):
             response = 'OK'
             if resultstr:
                 response += ' %s' % resultstr
-        self.sock.send('%s\n' % response)
+        try:
+            self.sock.send('%s\n' % response)
+        except socket.error:
+            # in case end point disconnected
+            pass
 
 
 class Reactor(object):
@@ -509,7 +516,10 @@ def signal_handler(signum, frame):
 
 def run(options):
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    if options.verbose:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
     if options.log_file:
         handler = logging.handlers.RotatingFileHandler(
             options.log_file, maxBytes=1024*1024, backupCount=5)
@@ -551,6 +561,8 @@ def main():
                       default=DEFAULT_NGINX_LOCATIONS_DIR)
     parser.add_option('-u', '--user', dest='user',
                       help='user to run templeton apps', default=DEFAULT_USER)
+    parser.add_option('-v', '--verbose', dest='verbose',
+                      action='store_true', help='enable verbose logging')
     (options, args) = parser.parse_args()
 
     if options.data_file is None:
