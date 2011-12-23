@@ -5,7 +5,6 @@ import inspect
 import logging
 import logging.handlers
 import os
-import select
 import signal
 import socket
 import subprocess
@@ -14,6 +13,8 @@ import tempita
 import templeton
 import time
 import ConfigParser
+
+import templeton.events
 
 FCGI_APP = 'templeton.fcgi'
 DEFAULT_USER = 'mozauto'
@@ -33,6 +34,25 @@ def execution_path(filename):
     return path
 
 
+class AppMissingData(Exception):
+    pass
+
+
+class CommandError(Exception):
+
+    def __init__(self, err, errstr=''):
+        self.err = err
+        if errstr:
+            self.errstr = errstr
+        else:
+            self.errstr = os.strerror(self.err)
+    
+    def __str__(self):
+        return 'ERROR %d %s' % (self.err, self.errstr)
+
+
+"""Variety of ConfigParser that immediately autocommits changes.
+"""
 class ImmediateWriteConfigParser(ConfigParser.ConfigParser):
 
     def __init__(self, filename):
@@ -56,10 +76,8 @@ class ImmediateWriteConfigParser(ConfigParser.ConfigParser):
         self.save()
 
 
-class AppMissingData(Exception):
-    pass
-
-
+"""Represents a single templeton project.
+"""
 class TempletonApp(object):
 
     MAX_RETRY_COUNT = 5
@@ -137,20 +155,119 @@ class TempletonApp(object):
         self.stop()
         self.cfg.remove_section(self.app_name)
 
+    def virtualenv(self):
+        return os.path.exists(os.path.join(self.path, 'bin')) and \
+            os.path.exists(os.path.join(self.path, 'src', self.app_name))
 
-class CommandError(Exception):
+    def server_path(self):
+        if self.virtualenv():
+            return os.path.join(self.path, 'src', self.app_name, 'server')
+        return os.path.join(self.path, 'server')
 
-    def __init__(self, err, errstr=''):
-        self.err = err
-        if errstr:
-            self.errstr = errstr
+    """ Path to the copy of the python binary we should use when executing
+    the server.
+    """
+    def python_path(self):
+        if self.virtualenv():
+            # FIXME: This is probably platform specific.
+            return os.path.join(self.path, 'bin', 'python')
+        return sys.executable
+
+    def html_path(self):
+        if self.virtualenv():
+            return os.path.join(self.path, 'src', self.app_name, 'html')
+        return os.path.join(self.path, 'html')
+
+
+"""Controls a templeton project.
+"""
+class TempletonAppController(templeton.events.EventHandler):
+
+    def __init__(self, app):
+        templeton.events.EventHandler.__init__(self)
+        self.app = app
+        self.p = None
+        self.returncode = None
+
+    def fileno(self):
+        return self.p.stdout.fileno()
+
+    def execute(self):
+        if self.p:
+            while True:
+                read = self.p.stdout.read()
+                if not read:
+                    break
+            if self.p.poll() is not None:
+                self.returncode = self.p.returncode
+                self.p.wait()
+                self.close()
+
+    def close(self):
+        if self.closed:
+            return
+        templeton.events.EventHandler.close(self)
+        self.p = None
+        self.closed = True
+        self.app.controller_closed()
+
+    def start(self):
+        if self.p:
+            return
+        args = ('spawn-fcgi',
+                '-n',
+                '-d',
+                self.app.server_path(),
+                '-a',
+                '127.0.0.1',
+                '-p',
+                str(self.app.port),
+                '-u',
+                self.app.user,
+                '--',
+                self.app.python_path(),
+                execution_path(FCGI_APP))
+        self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, close_fds=True)
+        logging.debug('Starting "%s": %s' % (self.app.app_name, ' '.join(args)))
+        logging.info('App "%s" started, pid %d' % (self.app.app_name,
+                                                   self.p.pid))
+
+    def stop(self):
+        if not self.p:
+            return
+        try:
+            self.p.terminate()
+        except OSError, e:
+            if e.errno != 3:
+                raise
+        for i in xrange(0, TERM_TIMEOUT):
+            if self.p.poll() is not None:
+                break
+            time.sleep(1)
+        if self.p.poll() is None:
+            try:
+                self.p.kill()
+            except OSError, e:
+                if e.errno != 3:
+                    raise
+            else:
+                for i in xrange(0, TERM_TIMEOUT):
+                    if self.p.poll() is not None:
+                        break
+                    time.sleep(1)
+        if self.p.poll() is None:
+            logging.error('Could not kill app "%s"!' % self.app.app_name)
         else:
-            self.errstr = os.strerror(self.err)
-    
-    def __str__(self):
-        return 'ERROR %d %s' % (self.err, self.errstr)
+            self.p.wait()
+            self.returncode = self.p.returncode
+        logging.info('App "%s" stopped.' % self.app.app_name)
+        self.close()
 
 
+"""Manages a collection of templeton apps.
+"""
 class TempletonMgr(object):
 
     def __init__(self, cfg_file_name, starting_port, user, nginx_locations_dir):
@@ -165,13 +282,14 @@ class TempletonMgr(object):
             self.load_app(n)
 
     def load_app(self, app_name):
-        missing_data = False
-        app_data = {}
+        app = None
         try:
-            self.apps[app_name] = TempletonApp(app_name, self.user, self.cfg)
+            app = TempletonApp(app_name, self.user, self.cfg)
+            self.apps[app_name] = app
         except AppMissingData:
             sys.stderr.write('App "%s" has missing data; ignoring it.\n'
                              % app_name)
+        return app
 
     def next_free_port(self):
         occupied_ports = map(lambda x: x.port, self.apps.values())
@@ -219,14 +337,14 @@ class TempletonMgr(object):
         self.cfg.add_section(app_name)
         self.cfg.set(app_name, 'path', app_path)
         self.cfg.set(app_name, 'port', str(app_port))
-        self.load_app(app_name)
+        app = self.load_app(app_name)
         data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
         templates_dir = os.path.join(data_dir, 'templates', 'server')
         tmpl = tempita.Template.from_filename(os.path.join(templates_dir,
                                                            'nginx_location.conf.tmpl'))
         f = file(os.path.join(self.nginx_locations_dir, '%s.conf' % app_name), 'w')
         f.write(tmpl.substitute(appname=app_name, port=app_port,
-                                htmlpath=os.path.join(app_path, 'html')))
+                                htmlpath=app.html_path()))
         f.close()
         # FIXME: Would be nice to automatically reload the nginx config...
 
@@ -258,113 +376,16 @@ class TempletonMgr(object):
         return ', '.join(app_strs)
 
 
-class EventHandler(object):
-
-    def __init__(self):
-        self.closed = False
-
-    def close(self):
-        self.closed = True
-
-    def fileno(self):
-        return -1
-
-
-class TempletonAppController(EventHandler):
-
-    def __init__(self, app):
-        EventHandler.__init__(self)
-        self.app = app
-        self.p = None
-        self.returncode = None
-
-    def fileno(self):
-        return self.p.stdout.fileno()
-
-    def execute(self):
-        if self.p:
-            while True:
-                read = self.p.stdout.read()
-                if not read:
-                    break
-            if self.p.poll() is not None:
-                self.returncode = self.p.returncode
-                self.p.wait()
-                self.close()
-
-    def close(self):
-        if self.closed:
-            return
-        EventHandler.close(self)
-        self.p = None
-        self.closed = True
-        self.app.controller_closed()
-
-    def start(self):
-        if self.p:
-            return
-        args = ('spawn-fcgi',
-                '-n',
-                '-d',
-                os.path.join(self.app.path, 'server'),
-                '-a',
-                '127.0.0.1',
-                '-p',
-                str(self.app.port),
-                '-u',
-                self.app.user,
-                '--',
-                sys.executable,
-                execution_path(FCGI_APP))
-        self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, close_fds=True)
-        logging.debug('Starting "%s": %s' % (self.app.app_name, ' '.join(args)))
-        logging.info('App "%s" started, pid %d' % (self.app.app_name,
-                                                   self.p.pid))
-
-    def stop(self):
-        if not self.p:
-            return
-        try:
-            self.p.terminate()
-        except OSError, e:
-            if e.errno != 3:
-                raise
-        for i in xrange(0, TERM_TIMEOUT):
-            if self.p.poll() is not None:
-                break
-            time.sleep(1)
-        if self.p.poll() is None:
-            try:
-                self.p.kill()
-            except OSError, e:
-                if e.errno != 3:
-                    raise
-            else:
-                for i in xrange(0, TERM_TIMEOUT):
-                    if self.p.poll() is not None:
-                        break
-                    time.sleep(1)
-        if self.p.poll() is None:
-            logging.error('Could not kill app "%s"!' % self.app.app_name)
-        else:
-            self.p.wait()
-            self.returncode = self.p.returncode
-        logging.info('App "%s" stopped.' % self.app.app_name)
-        self.close()
-
-
-class SocketEventHandler(EventHandler):
+class SocketEventHandler(templeton.events.EventHandler):
     
     def __init__(self, sock):
-        EventHandler.__init__(self)
+        templeton.events.EventHandler.__init__(self)
         self.sock = sock
 
     def close(self):
         if self.closed:
             return
-        EventHandler.close(self)
+        templeton.events.EventHandler.close(self)
         if self.sock:
             self.sock.close()
             self.sock = None
@@ -378,7 +399,7 @@ class CommandAcceptor(SocketEventHandler):
     SOCK_FILENAME = '/var/run/templetond/templetond.sock'
 
     def __init__(self, appmgr):
-        EventHandler.__init__(self)
+        templeton.events.EventHandler.__init__(self)
         self.appmgr = appmgr
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -404,11 +425,10 @@ class CommandHandler(SocketEventHandler):
     RECV_BYTES = 1024
 
     def __init__(self, sock, appmgr):
-        EventHandler.__init__(self)
+        templeton.events.EventHandler.__init__(self)
         self.sock = sock
         self.appmgr = appmgr
         self.buffer = ''
-        EventHandler.__init__(self)
 
     def execute(self):
         while True:
@@ -444,6 +464,9 @@ class CommandHandler(SocketEventHandler):
                 resultstr = self.appmgr.start(args)
             elif cmd == 'stop':
                 resultstr = self.appmgr.stop(args)
+            elif cmd == 'restart':
+                resultstr = self.appmgr.stop(args)
+                resultstr = self.appmgr.start(args)
             elif cmd == 'disable':
                 resultstr = self.appmgr.disable(args)
             elif cmd == 'enable':
@@ -469,45 +492,6 @@ class CommandHandler(SocketEventHandler):
             pass
 
 
-class Reactor(object):
-
-    SELECT_TIMEOUT = 0.1
-
-    def __init__(self):
-        self.event_handlers = []
-        self.enabled = True
-
-    def stop(self):
-        self.enabled = False
-
-    def register_handler(self, handler):
-        self.event_handlers.append(handler)
-
-    def unregister_handler(self, handler):
-        self.event_handlers.remove(handler)
-    
-    def run(self):
-        while self.enabled:
-            try:
-                fileno_map = {}
-                for e in self.event_handlers:
-                    if e.closed:
-                        self.event_handlers.remove(e)
-                    else:
-                        fileno_map[e.fileno()] = e
-                rlist = fileno_map.keys()
-                rlist.sort()
-                try:
-                    rready, wready, xready = select.select(rlist, [], [],
-                                                           self.SELECT_TIMEOUT)
-                except select.error, e:
-                    continue
-                for fileno in rready:
-                    fileno_map[fileno].execute()
-            except KeyboardInterrupt:
-                self.enabled = False
-
-
 def signal_handler(signum, frame):
     global reactor
     if signum == signal.SIGTERM and reactor:
@@ -530,7 +514,7 @@ def run(options):
     logger.addHandler(handler)
 
     global reactor
-    reactor = Reactor()
+    reactor = templeton.events.Reactor()
     mgr = TempletonMgr(options.data_file, options.starting_port, options.user,
                        options.nginx_locations_dir)
     mgr.start_all()
