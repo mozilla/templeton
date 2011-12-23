@@ -54,17 +54,17 @@ Usage:
 
     templeton install <www-data-dir>
 
-Copies support files (JS, CSS) into a "templeton" directory in <www-data-dir>.
+Copies support files (JS, CSS) into a "templeton" directory in www-data-dir.
 The latter should be the root of the web site that will serve templeton
 apps, since the template HTML file loads JS and CSS from /templeton.
 
     templeton init <appname>
 
-Creates a new templeton project in a directory called <appname>, relative to
+Creates a new templeton project in a directory called appname, relative to
 the current working directory.  If virtualenv is available, a virtualenv is
 installed to the new directory, and the template files are installed to
-<appname>/src/<appname>/.  If virtualenv is not available, the templates are
-copied directly into <appname>/.
+appname/src/appname/.  If virtualenv is not available, the templates are
+copied directly into appname/.
 
   You should be able to serve up your default app by doing
 
@@ -156,8 +156,8 @@ redirect to api/foo/.  Your handler URLs should reflect this.
 
 The handlers module also provides helper functions.
 
-load_urls() takes a web.py URL-handler sequence, i.e. (<path>, <class name>,
-<path>, <class name>, ...), and prepends the REST API path, '/api', to each
+load_urls() takes a web.py URL-handler sequence, i.e. (path, class_name,
+path, class_name, ...), and prepends the REST API path, '/api', to each
 given path.  The default server.py (created by the 'init' script command) uses
 this function to load urls from handlers.py.
 
