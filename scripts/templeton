@@ -1,6 +1,7 @@
 #!python
 
 import errno
+import inspect
 import os
 import shutil
 import socket
@@ -17,191 +18,190 @@ TEMPLETOND_SOCK_FILENAME = '/var/run/templetond/templetond.sock'
 data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
 
 
-def socket_command(cmd_str):
-    if not os.path.exists(os.path.join('server', 'server.py')) and \
-       not os.path.exists(os.path.join('src', os.path.basename(os.getcwd()),
-                                       'server', 'server.py')):
-        sys.stderr.write('This does not appear to be a templeton app.\n')
-        return
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.connect(TEMPLETOND_SOCK_FILENAME)
-    except socket.error, e:
-        if e.errno == 2:
-            return (2, 'Could not connect to socket; is templetond running?')
-    sock.send(cmd_str + '\n')
-    rsp = ''
-    while '\n' not in rsp:
-        read = sock.recv(1024)
-        if read:
-            rsp += read
-        else:
-            break
-    sock.close()
-    err = 0
-    errstr = ''
-    rsp = rsp.rstrip('\n')
-    if rsp[:5] == 'ERROR':
-        s = rsp.split(' ')
+class Commands(object):
+
+    def __init__(self):
+        self.app_name = os.path.basename(os.getcwd())
+
+    def handle_cmd(self, args):
+        cmd = args[0]
         try:
-            err = int(s[1])
-        except ValueError:
+            f = getattr(self, 'cmd_' + cmd)
+        except AttributeError:
+            sys.stderr.write('No such command "%s".\n' % cmd)
+            return errno.EOPNOTSUPP
+        if not callable(f):
+            sys.stderr.write('No such command "%s".\n' % cmd)
+            return errno.EOPNOTSUPP
+        try:
+            rc = f(*args[1:])
+        except TypeError:
+            sys.stderr.write('Invalid arguments.\n')
+            return errno.EINVAL
+        return rc
+
+    def help(self):
+        """Help on available commands."""
+        help = ''
+        cmds = [(x, y) for x, y in Commands.__dict__.iteritems()]
+        cmds.sort(key=lambda x: x[0])
+        for name, member in cmds:
+            if name.startswith('cmd_') and callable(member):
+                help += '    %s\n' % ' '.join([name[4:]] +
+                                              ['<%s>' % x for x in
+                                               inspect.getargspec(member).args[1:]])
+                if member.__doc__:
+                    help += '        %s\n' % member.__doc__.splitlines()[0]
+        return 'Available commands:\n%s' % help
+
+    def socket_command(self, cmd_str, needs_app=True):
+        if needs_app and \
+           not os.path.exists(os.path.join('server', 'server.py')) and \
+           not os.path.exists(os.path.join('src', os.path.basename(os.getcwd()),
+                                           'server', 'server.py')):
+            sys.stderr.write('This does not appear to be a templeton app.\n')
+            return errno.ENOENT
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(TEMPLETOND_SOCK_FILENAME)
+            sock.send(cmd_str + '\n')
+        except socket.error, e:
+            if e.errno == errno.ENOENT or e.errno == errno.ENOTCONN or \
+               e.errno == errno.ECONNREFUSED:
+                sys.stderr.write('Could not connect to socket; is templetond running?\n')
+                return e.errno
+            
+        rsp = ''
+        while '\n' not in rsp:
+            read = sock.recv(1024)
+            if read:
+                rsp += read
+            else:
+                break
+        sock.close()
+        err = 0
+        errstr = ''
+        rsp = rsp.rstrip('\n')
+        if rsp[:5] == 'ERROR':
+            s = rsp.split(' ')
+            try:
+                err = int(s[1])
+            except ValueError:
+                err = 255
+                errstr = rsp
+            else:
+                errstr = ' '.join(s[2:])
+        elif rsp[:2] == 'OK':
+            if len(rsp) > 2:
+                print rsp[2:].strip()
+        else:
             err = 255
             errstr = rsp
+        if errstr:
+            sys.stderr.write('error: %s\n' % errstr)
+        return err
+
+    def cmd_init(self, appname):
+        """Create a new templeton project.
+        Creates the directory structure from stored templates. Also creates
+        a virtualenv, if module is available.
+
+        FIXME: Probably want to be able to force nonvirtualenv...?
+        """
+        if '/' in appname:
+            print 'Slashes are not allowed in project names.'
+            return errno.EINVAL
+        if os.path.exists(appname):
+            print 'Cannot initialize project "%s" over existing %s.' % \
+                (appname, 'directory' if os.path.isdir(appname) else 'file')
+            return errno.EEXIST
+        templates_dir = os.path.join(data_dir, 'templates', 'project')
+        if 'virtualenv' in sys.modules:
+            print 'Creating virtualenv...'
+            virtualenv.create_environment(appname)
+            os.mkdir(os.path.join(appname, 'src'))
+            appdir = os.path.join(appname, 'src', appname)
         else:
-            errstr = ' '.join(s[2:])
-    elif rsp[:2] == 'OK':
-        if len(rsp) > 2:
-            print rsp[2:].strip()
-    else:
-        err = 255
-        errstr = rsp
-    if errstr:
-        sys.stderr.write('error: %s\n' % errstr)
-    return err
+            appdir = appname
+        print 'Creating templeton app...'
+        shutil.copytree(templates_dir, appdir)
+        # special templatization for index.html
+        html_dir = os.path.join(appdir, 'html')
+        tmpl = tempita.Template.from_filename(os.path.join(html_dir,
+                                                           'index.html.tmpl'))
+        f = file(os.path.join(html_dir, 'index.html'), 'w')
+        f.write(tmpl.substitute(appname=appname))
+        f.close()
+        os.unlink(os.path.join(html_dir, 'index.html.tmpl'))
+        return 0
 
+    def cmd_install(self, wwwdata):
+        """Install the templeton static library to a web server root."""
+        server_dir = os.path.join(data_dir, 'server')
+        shutil.copytree(server_dir, os.path.join(wwwdata, 'templeton'))
+        return 0
 
-"""Create a new templeton project.
-Creates the directory structure from stored templates. Also creates
-a virtualenv, if module is available.
+    def cmd_register(self):
+        """Registers a new templeton project with the app server."""
+        rc = self.socket_command('register %s %s' %
+                            (self.app_name, os.getcwd()))
+        return rc
 
-FIXME: Probably want to be able to force nonvirtualenv...?
-"""
-def init(appname):
-    if '/' in appname:
-        print 'Slashes are not allowed in project names.'
-        return errno.EINVAL
-    if os.path.exists(appname):
-        print 'Cannot initialize project "%s" over existing %s.' % \
-            (appname, 'directory' if os.path.isdir(appname) else 'file')
-        return errno.EEXIST
-    templates_dir = os.path.join(data_dir, 'templates', 'project')
-    if 'virtualenv' in sys.modules:
-        print 'Creating virtualenv...'
-        virtualenv.create_environment(appname)
-        os.mkdir(os.path.join(appname, 'src'))
-        appdir = os.path.join(appname, 'src', appname)
-    else:
-        appdir = appname
-    print 'Creating templeton app...'
-    shutil.copytree(templates_dir, appdir)
-    # special templatization for index.html
-    html_dir = os.path.join(appdir, 'html')
-    tmpl = tempita.Template.from_filename(os.path.join(html_dir,
-                                                       'index.html.tmpl'))
-    f = file(os.path.join(html_dir, 'index.html'), 'w')
-    f.write(tmpl.substitute(appname=appname))
-    f.close()
-    os.unlink(os.path.join(html_dir, 'index.html.tmpl'))
-    return 0
+    def cmd_unregister(self):
+        """Unregisters a templeton project, removing it from the app server."""
+        rc = self.socket_command('unregister %s %s' %
+                            (self.app_name, os.getcwd()))
+        return rc
 
+    def cmd_enable(self):
+        """Enables a templeton project if previously disabled."""
+        rc = self.socket_command('enable %s' % self.app_name)
+        return rc
 
-"""Install the templeton static library to a web server root.
-"""
-def install(wwwdata):
-    server_dir = os.path.join(data_dir, 'server')
-    shutil.copytree(server_dir, os.path.join(wwwdata, 'templeton'))
-    return 0
+    def cmd_disable(self):
+        """Disables a templeton project."""
+        rc = self.socket_command('disable %s' % self.app_name)
+        return rc
 
+    def cmd_start(self):
+        """Starts the project's FastCGI server."""
+        rc = self.socket_command('start %s' % self.app_name)
+        return rc
 
-"""Registers a new templeton project with the app server.
-"""
-def register():
-    rc = socket_command('register %s %s' %
-                        (os.path.basename(os.getcwd()), os.getcwd()))
-    return rc
+    def cmd_stop(self):
+        """Stops the project's FastCGI server."""
+        rc = self.socket_command('stop %s' % self.app_name)
+        return rc
 
+    def cmd_restart(self):
+        """Restarts the project's FastCGI server."""
+        rc = self.socket_command('restart %s' % self.app_name)
+        return rc
 
-"""Unregisters a templeton project, removing it from the app server.
-"""
-def unregister():
-    rc = socket_command('unregister %s %s' %
-                        (os.path.basename(os.getcwd()), os.getcwd()))
-    return rc
-
-
-"""Enables a templeton project if previously disabled.
-"""
-def enable():
-    rc = socket_command('enable %s' % os.path.basename(os.getcwd()))
-    return rc
-
-
-"""Disables a templeton project.
-"""
-def disable():
-    rc = socket_command('disable %s' % os.path.basename(os.getcwd()))
-    return rc
-
-
-"""Starts the project's FastCGI server, for use with an external web server.
-"""
-def start():
-    rc = socket_command('start %s' % os.path.basename(os.getcwd()))
-    return rc
-
-
-"""Stops the project's FastCGI server.
-"""
-def stop():
-    rc = socket_command('stop %s' % os.path.basename(os.getcwd()))
-    return rc
-
-
-"""Restarts the project's FastCGI server.
-"""
-def restart():
-    rc = socket_command('restart %s' % os.path.basename(os.getcwd()))
-    return rc
-
-
-"""Lists all templeton projects registered with the server.
-"""
-def list():
-    rc = socket_command('list')
-    return rc
+    def cmd_list(self):
+        """Lists all templeton projects registered with the server."""
+        rc = self.socket_command('list', False)
+        return rc
 
 
 if __name__ == '__main__':
     from optparse import OptionParser
-    import errno
-    import sys
-    usage = '''%prog [options] <cmd> <parameters>
 
-<cmd> and <parameters> should be one of
-  init <appname>
-    Create a new templeton app
-  install <www-data-dir>
-    Install support web files (standard JS & CSS files)'''
+    cmds = Commands()
+
+    usage = '''%prog [options] <cmd>
+
+'''
+    usage += cmds.help()
 
     parser = OptionParser(usage=usage)
     (options, args) = parser.parse_args()
     if len(args) < 1:
         parser.print_help()
         sys.exit(errno.EINVAL)
-    cmd = args[0]
-    if cmd == 'init':
-        rc = init(args[1])
-    elif cmd == 'install':
-        rc = install(args[1])
-    elif cmd == 'register':
-        rc = register()
-    elif cmd == 'unregister':
-        rc = unregister()
-    elif cmd == 'enable':
-        rc = enable()
-    elif cmd == 'disable':
-        rc = disable()
-    elif cmd == 'start':
-        rc = start()
-    elif cmd == 'stop':
-        rc = stop()
-    elif cmd == 'restart':
-        rc = restart()
-    elif cmd == 'list':
-        rc = list()
-    else:
+
+    rc = cmds.handle_cmd(args)
+    if rc == errno.EINVAL or rc == errno.EOPNOTSUPP:
         parser.print_help()
-        rc = errno.EINVAL
     sys.exit(rc)
         
