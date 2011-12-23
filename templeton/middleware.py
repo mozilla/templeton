@@ -68,5 +68,16 @@ class MozStaticMiddleware:
         return path2
 
 
-# Patch the original StaticMiddleware.
-web.httpserver.StaticMiddleware = MozStaticMiddleware
+def patch_middleware():
+    """Patch the original StaticMiddleware."""
+    web.httpserver.StaticMiddleware = MozStaticMiddleware
+
+
+# Older templeton apps expected the middleware to be patched when this module
+# was imported.  I realized this is probably poor form, so the project server
+# template now calls patch_middleware() directly, but leaving this in for
+# backwards compatibility.  It doesn't hurt to call it twice, and the explicit
+# call in server.py discourages people from deleting the middleware import line,
+# thinking it isn't used.
+patch_middleware()
+

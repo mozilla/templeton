@@ -331,7 +331,7 @@ class TempletonMgr(object):
             raise CommandError(errno.EINVAL,
                                'usage: register <app name> <app path>')
         if app_name in self.apps.keys():
-            raise CommandError(errno.EINVAL,
+            raise CommandError(errno.EEXIST,
                                'application "%s" already registered' % app_name)
         app_port = self.next_free_port()
         self.cfg.add_section(app_name)
@@ -347,6 +347,7 @@ class TempletonMgr(object):
                                 htmlpath=app.html_path()))
         f.close()
         # FIXME: Would be nice to automatically reload the nginx config...
+        return 'Web-server config file written.  Restart your web server.'
 
     def unregister(self, args):
         try:
@@ -355,6 +356,7 @@ class TempletonMgr(object):
             raise CommandError(errno.EINVAL,
                                'usage: unregister <app name>')
         self.get_app(args).unregister()
+        # FIXME: Delete nginx config file.
         self.apps.pop(app_name)
         
     def disable(self, args):
