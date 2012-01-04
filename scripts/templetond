@@ -227,10 +227,10 @@ class TempletonAppController(templeton.events.EventHandler):
                 '--',
                 self.app.python_path(),
                 execution_path(FCGI_APP))
+        logging.debug('Starting "%s": %s' % (self.app.app_name, ' '.join(args)))
         self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, close_fds=True)
-        logging.debug('Starting "%s": %s' % (self.app.app_name, ' '.join(args)))
         logging.info('App "%s" started, pid %d' % (self.app.app_name,
                                                    self.p.pid))
 
