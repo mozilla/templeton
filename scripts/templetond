@@ -16,6 +16,7 @@ import sys
 import tempita
 import templeton
 import time
+import which
 import ConfigParser
 
 import templeton.events
@@ -142,8 +143,10 @@ class TempletonApp(object):
             return
         if self.running():
             return
-        self.controller = TempletonAppController(self)
-        self.controller.start()
+        controller = TempletonAppController(self)
+        controller.start()
+        # wait to assign to self.controller in case an exception is thrown
+        self.controller = controller
         reactor.register_handler(self.controller)
 
     def stop(self):
@@ -218,7 +221,14 @@ class TempletonAppController(templeton.events.EventHandler):
     def start(self):
         if self.p:
             return
-        args = ('spawn-fcgi',
+        try:
+            spawn_fcgi_path = which.which('spawn-fcgi')
+        except which.WhichError, e:
+            errmsg = 'Could not start app "%s": %s' % (self.app.app_name, e)
+            logging.error(errmsg)
+            raise CommandError(errno.ENOENT, errmsg)
+
+        args = (spawn_fcgi_path,
                 '-n',
                 '-d',
                 self.app.server_path(),
@@ -318,7 +328,10 @@ class TempletonMgr(object):
 
     def start_all(self, args=[]):
         for a in self.apps.values():
-            a.start()
+            try:
+                a.start()
+            except CommandError:
+                pass
 
     def stop(self, args):
         self.get_app(args).stop()
@@ -379,7 +392,8 @@ class TempletonMgr(object):
         app_strs = []
         for name, app in self.apps.iteritems():
             if app.running():
-                status = 'running on port %d' % app.port
+                status = 'pid %d, running on port %d' % (app.controller.p.pid,
+                                                         app.port)
             elif app.disabled:
                 status = 'disabled'
             else:

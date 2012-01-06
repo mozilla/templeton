@@ -40,10 +40,10 @@ from setuptools import setup
 
 version = '0.6'
 
-deps = ['web.py', 'tempita', 'python-daemon']
+deps = ['web.py', 'tempita', 'python-daemon', 'which']
 
 if sys.version < '2.5' or sys.version >= '3.0':
-    print >>sys.stderr, '%s requires Python >= 2.5 nd < 3.0' % _PACKAGE_NAME
+    print >>sys.stderr, '%s requires Python >= 2.5 and < 3.0' % _PACKAGE_NAME
     sys.exit(1)
 
 try:
