@@ -337,16 +337,22 @@ class TempletonMgr(object):
         if app_name in self.apps.keys():
             raise CommandError(errno.EEXIST,
                                'application "%s" already registered' % app_name)
+        data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
+        templates_dir = os.path.join(data_dir, 'templates', 'server')
+        tmpl = tempita.Template.from_filename(os.path.join(templates_dir,
+                                                           'nginx_location.conf.tmpl'))
+        conf_file_path = os.path.join(self.nginx_locations_dir, '%s.conf' %
+                                      app_name)
+        try:
+            f = file(conf_file_path, 'w')
+        except IOError, e:
+            raise CommandError(errno.EACCES, 'cannot write nginx config ' +
+                               'file %s' % conf_file_path)
         app_port = self.next_free_port()
         self.cfg.add_section(app_name)
         self.cfg.set(app_name, 'path', app_path)
         self.cfg.set(app_name, 'port', str(app_port))
         app = self.load_app(app_name)
-        data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
-        templates_dir = os.path.join(data_dir, 'templates', 'server')
-        tmpl = tempita.Template.from_filename(os.path.join(templates_dir,
-                                                           'nginx_location.conf.tmpl'))
-        f = file(os.path.join(self.nginx_locations_dir, '%s.conf' % app_name), 'w')
         f.write(tmpl.substitute(appname=app_name, port=app_port,
                                 htmlpath=app.html_path()))
         f.close()
@@ -413,7 +419,12 @@ class CommandAcceptor(SocketEventHandler):
         except OSError:
             pass
         self.sock.setblocking(0)
-        self.sock.bind(self.SOCK_FILENAME)
+        try:
+            self.sock.bind(self.SOCK_FILENAME)
+        except socket.error, e:
+            logging.error('Could not bind to socket %s: %s' %
+                          (self.SOCK_FILENAME, e))
+            raise
         self.sock.listen(1)
         reactor.register_handler(self)
 
@@ -504,7 +515,7 @@ def signal_handler(signum, frame):
         reactor.stop()
 
 
-def run(options):
+def setup_logging(options):
     logger = logging.getLogger()
     if options.verbose:
         logger.setLevel(logging.DEBUG)
@@ -519,6 +530,9 @@ def run(options):
             "%(asctime)s %(levelname)s %(message)s", '%Y-%m-%d %H:%M:%S'))
     logger.addHandler(handler)
 
+
+def run(options):
+    logging.info('Starting templeton app server.')
     global reactor
     reactor = templeton.events.Reactor()
     mgr = TempletonMgr(options.data_file, options.starting_port, options.user,
@@ -561,19 +575,30 @@ def main():
                 options.data_file = f
     if options.data_file is None:
         options.data_file = DEFAULT_DATA_FILES[0]
+
+    setup_logging(options)
+
     if options.foreground:
         signal.signal(signal.SIGTERM, signal_handler)
         run(options)
     else:
         import daemon, lockfile
-        context = daemon.DaemonContext(pidfile=lockfile.FileLock(options.pidfile))
+        context = daemon.DaemonContext(
+            pidfile=lockfile.FileLock(options.pidfile),
+            files_preserve=[hdl.stream for hdl in logging.getLogger().handlers]
+            )
         context.signal_map = { signal.SIGTERM: signal_handler }
         with context:
-            pidf = file(options.pidfile, 'w')
+            try:
+                pidf = file(options.pidfile, 'w')
+            except IOError, e:
+                logging.error('Can\'t create pidfile: %s' % e)
+                sys.exit(e.errno)
             pidf.write(str(os.getpid()))
             pidf.close()
             run(options)
             os.unlink(options.pidfile)
+    logging.info('Shutting down templeton app server.')
 
 if __name__ == '__main__':
     main()
