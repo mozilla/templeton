@@ -24,7 +24,7 @@ import templeton.events
 FCGI_APP = 'templeton.fcgi'
 DEFAULT_USER = 'mozauto'
 DEFAULT_PIDFILE = '/var/run/templetond/templetond.pid'
-DEFAULT_DATA_FILES = ('/var/run/templetond/templetond.apps', 'templetond.apps')
+DEFAULT_DATA_FILE = '/var/run/templetond/templetond.apps'
 DEFAULT_NGINX_LOCATIONS_DIR = '/etc/nginx/templeton-locations'
 DEFAULT_STARTING_PORT = 9500
 TERM_TIMEOUT = 5
@@ -567,7 +567,7 @@ def main():
                       action='store_true',
                       help='run in foreground (default is run as daemon)')
     parser.add_option('-d', '--data-file', dest='data_file',
-                      help='location of config file', default=None)
+                      help='location of config file', default=DEFAULT_DATA_FILE)
     parser.add_option('-l', '--log-file', dest='log_file',
                       help='location of log file, defaults to stdout',
                       default=None)
@@ -582,13 +582,6 @@ def main():
     parser.add_option('-v', '--verbose', dest='verbose',
                       action='store_true', help='enable verbose logging')
     (options, args) = parser.parse_args()
-
-    if options.data_file is None:
-        for f in DEFAULT_DATA_FILES:
-            if os.path.exists(f):
-                options.data_file = f
-    if options.data_file is None:
-        options.data_file = DEFAULT_DATA_FILES[0]
 
     setup_logging(options)
 
