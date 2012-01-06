@@ -5,6 +5,7 @@
 # http://mozilla.org/MPL/2.0/.
 
 import errno
+import fcntl
 import inspect
 import logging
 import logging.handlers
@@ -202,9 +203,17 @@ class TempletonAppController(templeton.events.EventHandler):
     def execute(self):
         if self.p:
             while True:
-                read = self.p.stdout.read()
+                try:
+                    read = self.p.stdout.read()
+                except IOError, e:
+                    if e.errno == errno.EAGAIN:
+                        read = None
+                    else:
+                        raise
                 if not read:
                     break
+                logging.debug('Received from "%s":' % self.app.app_name)
+                logging.debug(read)
             if self.p.poll() is not None:
                 self.returncode = self.p.returncode
                 self.p.wait()
@@ -245,6 +254,9 @@ class TempletonAppController(templeton.events.EventHandler):
         self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, close_fds=True)
+        # enable nonblocking reads from subprocess's stdout.
+        fl = fcntl.fcntl(self.p.stdout.fileno(), fcntl.F_GETFL)
+        fcntl.fcntl(self.p.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
         logging.info('App "%s" started, pid %d' % (self.app.app_name,
                                                    self.p.pid))
 

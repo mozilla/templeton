@@ -4,6 +4,9 @@ templeton, a minimal web framework
 Templeton is a script, daemon, module, and support files intended for rapid
 development of web applications.
 
+It currently runs on Linux.  Development mode should run on OS X, but I haven't
+tried deployment mode.
+
 
 Templeton apps
 --------------

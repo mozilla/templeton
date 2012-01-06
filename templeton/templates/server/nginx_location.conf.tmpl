@@ -18,6 +18,8 @@ location ~ ^/{{ appname }}/api/(.*)$ {
     fastcgi_pass 127.0.0.1:{{ port }};
 }
 
+rewrite ^/{{ appname }}$ /{{ appname }}/ permanent;
+
 location ~ ^/{{ appname }}/(.*)$ {
     alias {{ htmlpath }}/$1;
 }
