@@ -24,9 +24,6 @@ data_dir = os.path.dirname(os.path.abspath(templeton.__file__))
 
 class Commands(object):
 
-    def __init__(self):
-        self.app_name = os.path.basename(os.getcwd())
-
     def handle_cmd(self, args):
         cmd = args[0]
         try:
@@ -58,10 +55,22 @@ class Commands(object):
                     help += '        %s\n' % member.__doc__.splitlines()[0]
         return 'Available commands:\n%s' % help
 
-    def socket_command(self, cmd_str, needs_app=True):
-        if needs_app and \
-           not os.path.exists(os.path.join('server', 'server.py')) and \
-           not os.path.exists(os.path.join('src', os.path.basename(os.getcwd()),
+    def socket_command_with_project(self, cmd_str, app_name):
+        if app_name:
+            arg = 'name:%s' % app_name
+            verify_path = ''
+        else:
+            arg = 'path:%s' % self.app_path
+            verify_path = self.app_path
+        self.socket_command('%s %s' % (cmd_str, arg), verify_path)
+
+    def socket_command(self, cmd_str, verify_path=''):
+        """If verify_path is given, verify that it is a templeton path."""
+        if verify_path and \
+           not os.path.exists(os.path.join(verify_path, 'server',
+                                           'server.py')) and \
+           not os.path.exists(os.path.join(verify_path, 'src',
+                                           os.path.basename(os.getcwd()),
                                            'server', 'server.py')):
             sys.stderr.write('This does not appear to be a templeton app.\n')
             return errno.ENOENT
@@ -145,41 +154,46 @@ class Commands(object):
         shutil.copytree(server_dir, os.path.join(wwwdata, 'templeton'))
         return 0
 
-    def cmd_register(self):
-        """Registers a new templeton project with the app server."""
-        rc = self.socket_command('register %s %s' %
-                                 (self.app_name, os.getcwd()))
+    def cmd_register(self, app_path=None):
+        """Registers a new templeton project with the app server.
+        Path defaults to current path.
+        """
+        if app_path:
+            app_path = os.path.abspath(app_path)
+        else:
+            app_path = os.getcwd()
+        app_name = os.path.basename(app_path)
+        rc = self.socket_command('register %s %s' % (app_name, app_path))
         return rc
 
-    def cmd_unregister(self):
+    def cmd_unregister(self, app_name=None):
         """Unregisters a templeton project, removing it from the app server."""
-        rc = self.socket_command('unregister %s %s' %
-                                 (self.app_name, os.getcwd()))
+        rc = self.socket_command_with_project('unregister', app_name)
         return rc
 
-    def cmd_enable(self):
+    def cmd_enable(self, app_name=None):
         """Enables a templeton project if previously disabled."""
-        rc = self.socket_command('enable %s' % self.app_name)
+        rc = self.socket_command_with_project('enable', app_name)
         return rc
 
-    def cmd_disable(self):
+    def cmd_disable(self, app_name=None):
         """Disables a templeton project."""
-        rc = self.socket_command('disable %s' % self.app_name)
+        rc = self.socket_command_with_project('disable', app_name)
         return rc
 
-    def cmd_start(self):
+    def cmd_start(self, app_name=None):
         """Starts the project's FastCGI server."""
-        rc = self.socket_command('start %s' % self.app_name)
+        rc = self.socket_command_with_project('start', app_name)
         return rc
 
-    def cmd_stop(self):
+    def cmd_stop(self, app_name=None):
         """Stops the project's FastCGI server."""
-        rc = self.socket_command('stop %s' % self.app_name)
+        rc = self.socket_command_with_project('stop', app_name)
         return rc
 
-    def cmd_restart(self):
+    def cmd_restart(self, app_name=None):
         """Restarts the project's FastCGI server."""
-        rc = self.socket_command('restart %s' % self.app_name)
+        rc = self.socket_command_with_project('restart', app_name)
         return rc
 
     def cmd_list(self):
@@ -208,4 +222,3 @@ if __name__ == '__main__':
     if rc == errno.EINVAL or rc == errno.EOPNOTSUPP:
         parser.print_help()
     sys.exit(rc)
-        

@@ -16,6 +16,24 @@ class EventHandler(object):
         return -1
 
 
+class SocketEventHandler(EventHandler):
+    
+    def __init__(self, sock):
+        EventHandler.__init__(self)
+        self.sock = sock
+
+    def close(self):
+        if self.closed:
+            return
+        EventHandler.close(self)
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+
+    def fileno(self):
+        return self.sock.fileno()
+
+
 class Reactor(object):
 
     SELECT_TIMEOUT = 0.1

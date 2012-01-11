@@ -27,6 +27,7 @@ DEFAULT_USER = 'mozauto'
 DEFAULT_PIDFILE = '/var/run/templetond/templetond.pid'
 DEFAULT_DATA_FILE = '/var/run/templetond/templetond.apps'
 DEFAULT_NGINX_LOCATIONS_DIR = '/etc/nginx/templeton-locations'
+DEFAULT_SOCKET_FILENAME = '/var/run/templetond/templetond.sock'
 DEFAULT_STARTING_PORT = 9500
 TERM_TIMEOUT = 5
 
@@ -326,12 +327,22 @@ class TempletonMgr(object):
         return p
 
     def get_app(self, args):
-        try:
-            appname = args[0]
-        except IndexError:
-            raise CommandError(errno.EINVAL, 'specify app name')
-        app = self.apps.get(appname, None)
-        if app == None:
+        app = None
+        identifier, colon, value = args[0].partition(':')
+        if not colon:
+            raise CommandError(errno.EINVAL,
+                               'go to app directory or specify app name')
+        if identifier == 'name':
+            app = self.apps.get(value, None)
+        elif identifier == 'path':
+            for a in self.apps.values():
+                if a.path == value:
+                    app = a
+                    break
+        else:
+            raise CommandError(errno.EINVAL, 'unknown app identifier "%s"' %
+                               identifier)
+        if app is None:
             raise CommandError(errno.EINVAL, 'no such app')
         return app
 
@@ -386,13 +397,14 @@ class TempletonMgr(object):
 
     def unregister(self, args):
         try:
-            app_name = args[0]
+            app_id = args[0]
         except IndexError:
             raise CommandError(errno.EINVAL,
-                               'usage: unregister <app name>')
-        self.get_app(args).unregister()
+                               'usage: unregister <app id>')
+        app = self.get_app(args)
+        app.unregister()
         # FIXME: Delete nginx config file.
-        self.apps.pop(app_name)
+        self.apps.pop(app.app_name)
         
     def disable(self, args):
         self.get_app(args).disable()
@@ -414,42 +426,22 @@ class TempletonMgr(object):
         return ', '.join(app_strs)
 
 
-class SocketEventHandler(templeton.events.EventHandler):
-    
-    def __init__(self, sock):
-        templeton.events.EventHandler.__init__(self)
-        self.sock = sock
-
-    def close(self):
-        if self.closed:
-            return
-        templeton.events.EventHandler.close(self)
-        if self.sock:
-            self.sock.close()
-            self.sock = None
-
-    def fileno(self):
-        return self.sock.fileno()
-
-
-class CommandAcceptor(SocketEventHandler):
-
-    SOCK_FILENAME = '/var/run/templetond/templetond.sock'
+class CommandAcceptor(templeton.events.SocketEventHandler):
 
     def __init__(self, appmgr):
-        templeton.events.EventHandler.__init__(self)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        templeton.events.SocketEventHandler.__init__(self, sock)
         self.appmgr = appmgr
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            os.remove(self.SOCK_FILENAME)
+            os.remove(DEFAULT_SOCKET_FILENAME)
         except OSError:
             pass
         self.sock.setblocking(0)
         try:
-            self.sock.bind(self.SOCK_FILENAME)
+            self.sock.bind(DEFAULT_SOCKET_FILENAME)
         except socket.error, e:
             logging.error('Could not bind to socket %s: %s' %
-                          (self.SOCK_FILENAME, e))
+                          (DEFAULT_SOCKET_FILENAME, e))
             raise
         self.sock.listen(1)
         reactor.register_handler(self)
@@ -463,13 +455,12 @@ class CommandAcceptor(SocketEventHandler):
         reactor.register_handler(CommandHandler(conn, self.appmgr))
 
 
-class CommandHandler(SocketEventHandler):
+class CommandHandler(templeton.events.SocketEventHandler):
 
     RECV_BYTES = 1024
 
     def __init__(self, sock, appmgr):
-        templeton.events.EventHandler.__init__(self)
-        self.sock = sock
+        templeton.events.SocketEventHandler.__init__(self, sock)
         self.appmgr = appmgr
         self.buffer = ''
 
@@ -568,7 +559,7 @@ def run(options):
     reactor.run()
     mgr.stop_all()
 
-    
+
 def main():
     from optparse import OptionParser
     parser = OptionParser()
@@ -618,6 +609,7 @@ def main():
             run(options)
             os.unlink(options.pidfile)
     logging.info('Shutting down templeton app server.')
+
 
 if __name__ == '__main__':
     main()
