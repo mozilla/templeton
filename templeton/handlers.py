@@ -2,6 +2,7 @@
 # version 2.0 (the "License"). You can obtain a copy of the License at
 # http://mozilla.org/MPL/2.0/.
 
+import datetime
 try:
     import json
 except:
@@ -13,6 +14,14 @@ import web
 
 """ URL fragment with which all dynamic requests should begin. """
 API_PATH = '/api'
+
+class DateTimeJSONEncoder(json.JSONEncoder):
+    """Encodes datetime objects as ISO strings."""
+    def default(self, o):
+        if isinstance(o, datetime.datetime):
+            return o.isoformat()
+        return json.JSONEncoder.default(self, o)
+
 
 def load_urls(u):
     """ Load a list of URLs, ensuring they all start with API_PATH. """
@@ -53,7 +62,7 @@ def json_response(func):
         redirect_api_if_needed()
 
         try:
-            results = json.dumps(func(*a, **kw))
+            results = json.dumps(func(*a, **kw), cls=DateTimeJSONEncoder)
         except KeyboardInterrupt:
             # Allow keyboard interrupts through for debugging.
             raise
